@@ -6,7 +6,7 @@ import pickle
 import re
 import random
 import time
-
+import pygame
 import requests
 from bs4 import BeautifulSoup
 
@@ -969,6 +969,10 @@ class Assistant(object):
             self.get_checkout_page_detail()
             if self.submit_order():
                 logger.info('第%s次提交订单成功', i)
+                file=r'C:\Users\admin\Desktop\mask\jd-assistant-master\success.mp3'
+                pygame.mixer.init()
+                track = pygame.mixer.music.load(file)
+                pygame.mixer.music.play()
                 return True
             else:
                 if i < retry:

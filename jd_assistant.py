@@ -1393,3 +1393,91 @@ class Assistant(object):
                         return
 
                 time.sleep(stock_interval)
+                
+                
+    def buy_item_in_cart(self,sku_ids,area,stock_interval=3, submit_retry=3, submit_interval=0.001):
+        """为提高效率，心仪商品全部提前加入购物车，检测库存有货立马购物车中开始提交
+        :param sku_ids: 商品id。可以设置多个商品，也可以带数量，如：'1234' 或 '1234,5678' 或 '1234:2' 或 '1234:2,5678:3'
+        :param area: 地区id
+        :param stock_interval: 查询库存时间间隔，可选参数，默认3秒
+        :param submit_retry: 提交订单失败后重试次数，可选参数，默认3次
+        :param submit_interval: 提交订单失败后重试时间间隔，可选参数，默认0.001秒
+        :return:
+        """
+        #先获取好购物车信息，以便知道有库存后不用重新爬取购物车信息而影响效率，代码来自get_cart_detail()
+        url = 'https://cart.jd.com/cart.action'
+        resp = self.sess.get(url)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        cart_detail = dict()
+        for item in soup.find_all(class_='item-item'):
+            try:
+                sku_id = item['skuid']  # 商品id
+                # 例如：['increment', '8888', '100001071956', '1', '13', '0', '50067652554']
+                # ['increment', '8888', '100002404322', '2', '1', '0']
+                item_attr_list = item.find(class_='increment')['id'].split('_')
+                p_type = item_attr_list[4]
+                promo_id = target_id = item_attr_list[-1] if len(item_attr_list) == 7 else 0
+
+                cart_detail[sku_id] = {
+                    'name': get_tag_value(item.select('div.p-name a')),  # 商品名称
+                    'verder_id': item['venderid'],  # 商家id
+                    'count': int(item['num']),  # 数量
+                    'unit_price': get_tag_value(item.select('div.p-price strong'))[1:],  # 单价
+                    'total_price': get_tag_value(item.select('div.p-sum strong'))[1:],  # 总价
+                    'is_selected': 'item-selected' in item['class'],  # 商品是否被勾选
+                    'p_type': p_type,
+                    'target_id': target_id,
+                    'promo_id': promo_id
+                }
+            except Exception as e:
+                logger.error("某商品在购物车中的信息无法解析，报错信息: %s，该商品自动忽略。 %s", e, item)
+        cart=self.get_cart_detail()#后面修改商品数量要用 
+        print("报告！购物车读取完毕！")
+        #logger.info('购物车信息：%s', cart_item)        
+        
+        #遍历查询sku_ids是否有货并最终下单，代码来自buy_item_in_stock
+        items_dict = parse_sku_id(sku_ids)
+        #items_list = list(items_dict.keys())
+        area_id = parse_area_id(area=area)
+        while True:
+            for (sku_id, count) in items_dict.items():
+                cart_item = cart.get(sku_id)#读取之前获得的购物车里sku_id对应信息
+                if not self.if_item_can_be_ordered(sku_ids={sku_id: count}, area=area_id):  
+                    logger.info('%s 不满足下单条件，%ss后进行下一次查询', sku_id, stock_interval)
+                else:
+                    logger.info('%s 满足下单条件，开始执行', sku_id)
+                
+                    #判断是否已在购物车
+                    if sku_id in cart:
+                        print("商品在购物车中")
+                        
+                        #修改购物车数量，以达到勾选商品的目的，代码来自_add_or_change_cart_item
+                        url = "https://cart.jd.com/changeNum.action"
+                        data = {
+                                't': 0,
+                                'venderId': cart_item.get('vender_id'),
+                                'pid': sku_id,
+                                'pcount': 1,
+                                'ptype': cart_item.get('p_type'),
+                                'targetId': cart_item.get('target_id'),
+                                'promoID': cart_item.get('promo_id'),
+                                'outSkus': '',
+                                'random': random.random(),
+                                # 'locationId'
+                                }
+                        headers = {
+                                'User-Agent': self.user_agent,
+                                'Referer': 'https://cart.jd.com/cart',
+                                }
+                        resp = self.sess.post(url, data=data, headers=headers)
+            
+                        if self.submit_order_with_retry(submit_retry, submit_interval):
+                            return
+                        else:
+                            print("商品不在购物车中")
+                            self._cancel_select_all_cart_item()
+                            self._add_or_change_cart_item(self.get_cart_detail(), sku_id, count)
+                            if self.submit_order_with_retry(submit_retry, submit_interval):
+                                return
+                time.sleep(stock_interval)
